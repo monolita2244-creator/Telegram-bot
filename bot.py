@@ -18,10 +18,12 @@ COUNTER_FILE = "counter.txt"
 OBJECT_FILE = "object.txt"
 
 DEFAULT_WORKS = [
-    {"name": "Установка анкеров", "plan": 13.61077, "done": 0.0}
+    {"name": "Установка анкеров", "plan": 13.61077, "done": 0.0, "unit": "т"}
 ]
 
 WEEKDAYS_RU = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
+
+UNITS = ["т", "м²", "м³", "шт", "п.м", "м", "кг", "м.п"]
 
 # --- Файловые функции ---
 
@@ -29,7 +31,11 @@ def load_works():
     if os.path.exists(DATA_FILE):
         with open(DATA_FILE, "r", encoding="utf-8") as f:
             try:
-                return json.load(f)
+                data = json.load(f)
+                for w in data:
+                    if "unit" not in w:
+                        w["unit"] = "т"
+                return data
             except:
                 pass
     return [w.copy() for w in DEFAULT_WORKS]
@@ -95,6 +101,14 @@ def works_list_menu():
         b.button(text="➕ Добавить вид работы", callback_data="w_add")
     b.button(text="◀️ Назад", callback_data="menu_settings")
     b.adjust(*([2] * len(works)), 1, 1)
+    return b.as_markup()
+
+def units_keyboard(prefix="unit_new"):
+    b = InlineKeyboardBuilder()
+    for u in UNITS:
+        b.button(text=u, callback_data=f"{prefix}_{u}")
+    b.button(text="✏️ Своя единица", callback_data=f"{prefix}_custom")
+    b.adjust(4, 4, 1)
     return b.as_markup()
 
 def cancel_keyboard():
@@ -166,24 +180,30 @@ class SettingsStates(StatesGroup):
     waiting_object_name = State()
     waiting_new_work_name = State()
     waiting_new_work_plan = State()
+    waiting_new_work_unit_custom = State()
     waiting_edit_work_name = State()
     waiting_edit_work_plan = State()
+    waiting_edit_work_unit_custom = State()
 
 # --- /start ---
 
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message, state: FSMContext):
     await state.clear()
+    await show_main_menu_msg(message)
+
+async def show_main_menu_msg(message: types.Message):
     works = load_works()
     obj = load_object()
-    works_str = "\n".join(f"  🔨 {w['name']} — план: {w['plan']} т" for w in works)
+    works_str = "\n".join(
+        f"  🔨 {w['name']} — план: {w['plan']} {w.get('unit','т')}" for w in works
+    )
     await message.answer(
         f"👋 Привет! Я бот для ежесменных отчётов.\n\n"
         f"🏗 Объект: <b>{obj}</b>\n\n"
         f"Виды работ:\n{works_str}\n\n"
         f"Выберите действие:",
-        reply_markup=main_menu(),
-        parse_mode="HTML"
+        reply_markup=main_menu(), parse_mode="HTML"
     )
 
 @dp.callback_query(F.data == "menu_main")
@@ -191,23 +211,21 @@ async def cb_main_menu(callback: types.CallbackQuery, state: FSMContext):
     await state.clear()
     works = load_works()
     obj = load_object()
-    works_str = "\n".join(f"  🔨 {w['name']} — план: {w['plan']} т" for w in works)
+    works_str = "\n".join(
+        f"  🔨 {w['name']} — план: {w['plan']} {w.get('unit','т')}" for w in works
+    )
     await callback.message.edit_text(
         f"🏗 Объект: <b>{obj}</b>\n\n"
         f"Виды работ:\n{works_str}\n\n"
         f"Выберите действие:",
-        reply_markup=main_menu(),
-        parse_mode="HTML"
+        reply_markup=main_menu(), parse_mode="HTML"
     )
     await callback.answer()
 
 @dp.callback_query(F.data == "cancel_report")
 async def cb_cancel_report(callback: types.CallbackQuery, state: FSMContext):
     await state.clear()
-    await callback.message.edit_text(
-        "❌ Отчёт отменён.\n\nВыберите действие:",
-        reply_markup=main_menu()
-    )
+    await callback.message.edit_text("❌ Отчёт отменён.\n\nВыберите действие:", reply_markup=main_menu())
     await callback.answer()
 
 # --- Статус ---
@@ -221,12 +239,13 @@ async def cb_status(callback: types.CallbackQuery):
     for w in works:
         plan = w['plan']
         done = w['done']
+        unit = w.get('unit', 'т')
         pct = (done / plan * 100) if plan > 0 else 0
         remains = plan - done
         lines.append(
             f"🔨 <b>{w['name']}</b>\n"
-            f"  ✅ Выполнено: {done:.4f} т ({pct:.2f}%)\n"
-            f"  ⬜️ Осталось: {remains:.4f} т из {plan} т\n"
+            f"  ✅ Выполнено: {done:.4f} {unit} ({pct:.2f}%)\n"
+            f"  ⬜️ Осталось: {remains:.4f} {unit} из {plan} {unit}\n"
         )
     lines.append(f"📋 Следующий отчёт: № {report_num}")
     await callback.message.edit_text("\n".join(lines), reply_markup=back_menu(), parse_mode="HTML")
@@ -238,7 +257,7 @@ async def cb_status(callback: types.CallbackQuery):
 async def cb_reset_ask(callback: types.CallbackQuery):
     await callback.message.edit_text(
         "⚠️ Вы уверены, что хотите сбросить все данные?\n"
-        "(объём выполнения и счётчик отчётов обнулятся,\nнастройки сохранятся)",
+        "(объём выполнения и счётчик обнулятся, настройки сохранятся)",
         reply_markup=confirm_reset_keyboard()
     )
     await callback.answer()
@@ -250,10 +269,7 @@ async def cb_reset_confirm(callback: types.CallbackQuery):
         w['done'] = 0.0
     save_works(works)
     save_counter(1)
-    await callback.message.edit_text(
-        "🔄 Данные сброшены до нуля.\n\nВыберите действие:",
-        reply_markup=main_menu()
-    )
+    await callback.message.edit_text("🔄 Данные сброшены до нуля.\n\nВыберите действие:", reply_markup=main_menu())
     await callback.answer()
 
 # --- Настройки ---
@@ -263,18 +279,16 @@ async def cb_settings(callback: types.CallbackQuery, state: FSMContext):
     await state.clear()
     obj = load_object()
     works = load_works()
-    works_str = "\n".join(f"  🔨 {w['name']} — {w['plan']} т" for w in works)
+    works_str = "\n".join(
+        f"  🔨 {w['name']} — {w['plan']} {w.get('unit','т')}" for w in works
+    )
     await callback.message.edit_text(
         f"⚙️ <b>Настройки</b>\n\n"
-        f"🏗 Объект: <b>{obj}</b>\n\n"
-        f"Виды работ:\n{works_str}\n\n"
-        f"Что изменить?",
-        reply_markup=settings_menu(),
-        parse_mode="HTML"
+        f"🏗 Объект: <b>{obj}</b>\n\nВиды работ:\n{works_str}\n\nЧто изменить?",
+        reply_markup=settings_menu(), parse_mode="HTML"
     )
     await callback.answer()
 
-# Сменить объект
 @dp.callback_query(F.data == "s_object")
 async def cb_s_object(callback: types.CallbackQuery, state: FSMContext):
     await callback.message.edit_text(
@@ -288,8 +302,10 @@ async def cb_s_object(callback: types.CallbackQuery, state: FSMContext):
 async def process_object_name(message: types.Message, state: FSMContext):
     save_object(message.text.strip())
     await state.clear()
-    await message.answer(f"✅ Объект сохранён: <b>{message.text.strip()}</b>",
-                         reply_markup=settings_menu(), parse_mode="HTML")
+    await message.answer(
+        f"✅ Объект сохранён: <b>{message.text.strip()}</b>",
+        reply_markup=settings_menu(), parse_mode="HTML"
+    )
 
 # --- Управление видами работ ---
 
@@ -297,17 +313,15 @@ async def process_object_name(message: types.Message, state: FSMContext):
 async def cb_s_works(callback: types.CallbackQuery, state: FSMContext):
     await state.clear()
     works = load_works()
-    if not works:
-        text = "⚒️ <b>Виды работ</b>\n\nСписок пуст. Добавьте хотя бы один вид работы."
-    else:
-        lines = [f"⚒️ <b>Виды работ</b>\n"]
-        for i, w in enumerate(works):
-            lines.append(f"{i+1}. {w['name']} — план: {w['plan']} т, выполнено: {w['done']:.4f} т")
-        text = "\n".join(lines)
-    await callback.message.edit_text(text, reply_markup=works_list_menu(), parse_mode="HTML")
+    lines = ["⚒️ <b>Виды работ</b>\n"]
+    for i, w in enumerate(works):
+        unit = w.get('unit', 'т')
+        lines.append(f"{i+1}. {w['name']} — план: {w['plan']} {unit}, выполнено: {w['done']:.4f} {unit}")
+    await callback.message.edit_text("\n".join(lines), reply_markup=works_list_menu(), parse_mode="HTML")
     await callback.answer()
 
-# Добавить работу
+# --- Добавить работу ---
+
 @dp.callback_query(F.data == "w_add")
 async def cb_w_add(callback: types.CallbackQuery, state: FSMContext):
     await callback.message.edit_text(
@@ -320,7 +334,7 @@ async def cb_w_add(callback: types.CallbackQuery, state: FSMContext):
 @dp.message(SettingsStates.waiting_new_work_name)
 async def process_new_work_name(message: types.Message, state: FSMContext):
     await state.update_data(new_work_name=message.text.strip())
-    await message.answer(f"Введите план для «{message.text.strip()}» (в тоннах, например: 20.5):")
+    await message.answer(f"Введите план для «{message.text.strip()}» (число, например: 20.5):")
     await state.set_state(SettingsStates.waiting_new_work_plan)
 
 @dp.message(SettingsStates.waiting_new_work_plan)
@@ -329,18 +343,42 @@ async def process_new_work_plan(message: types.Message, state: FSMContext):
         plan = float(message.text.strip().replace(',', '.'))
     except ValueError:
         return await message.answer("Введите число (например: 20.5):")
+    await state.update_data(new_work_plan=plan)
+    await message.answer(
+        "📏 Выберите единицу измерения:",
+        reply_markup=units_keyboard("unit_new")
+    )
+
+@dp.callback_query(F.data.startswith("unit_new_"))
+async def cb_unit_new(callback: types.CallbackQuery, state: FSMContext):
+    value = callback.data.replace("unit_new_", "")
+    if value == "custom":
+        await callback.message.edit_text("Введите свою единицу измерения (например: га, рейс, компл.):")
+        await state.set_state(SettingsStates.waiting_new_work_unit_custom)
+        await callback.answer()
+        return
+    await finish_add_work(callback.message, state, value)
+    await callback.answer()
+
+@dp.message(SettingsStates.waiting_new_work_unit_custom)
+async def process_new_work_unit_custom(message: types.Message, state: FSMContext):
+    await finish_add_work(message, state, message.text.strip())
+
+async def finish_add_work(message: types.Message, state: FSMContext, unit: str):
     data = await state.get_data()
     name = data['new_work_name']
+    plan = data['new_work_plan']
     works = load_works()
-    works.append({"name": name, "plan": plan, "done": 0.0})
+    works.append({"name": name, "plan": plan, "done": 0.0, "unit": unit})
     save_works(works)
     await state.clear()
     await message.answer(
-        f"✅ Добавлено: <b>{name}</b> — план {plan} т",
+        f"✅ Добавлено: <b>{name}</b>\nПлан: {plan} {unit}",
         reply_markup=works_list_menu(), parse_mode="HTML"
     )
 
-# Редактировать работу
+# --- Редактировать работу ---
+
 @dp.callback_query(F.data.startswith("w_edit_"))
 async def cb_w_edit(callback: types.CallbackQuery, state: FSMContext):
     idx = int(callback.data.split("_")[-1])
@@ -349,13 +387,13 @@ async def cb_w_edit(callback: types.CallbackQuery, state: FSMContext):
         await callback.answer("Ошибка")
         return
     w = works[idx]
+    unit = w.get('unit', 'т')
     await state.update_data(edit_work_idx=idx)
     await callback.message.edit_text(
-        f"✏️ <b>Редактирование работы</b>\n\n"
-        f"Текущее название: <b>{w['name']}</b>\n"
-        f"Текущий план: <b>{w['plan']} т</b>\n"
-        f"Выполнено: <b>{w['done']:.4f} т</b>\n\n"
-        f"Введите новое название (или отправьте «-» чтобы не менять):",
+        f"✏️ <b>Редактирование: {w['name']}</b>\n\n"
+        f"Текущий план: <b>{w['plan']} {unit}</b>\n"
+        f"Выполнено: <b>{w['done']:.4f} {unit}</b>\n\n"
+        f"Введите новое название (или «-» чтобы не менять):",
         parse_mode="HTML", reply_markup=back_works()
     )
     await state.set_state(SettingsStates.waiting_edit_work_name)
@@ -371,7 +409,7 @@ async def process_edit_work_name(message: types.Message, state: FSMContext):
         save_works(works)
     await state.update_data(edit_work_idx=idx)
     await message.answer(
-        f"Введите новый план в тоннах (или «-» чтобы не менять, текущий: {works[idx]['plan']} т):"
+        f"Введите новый план (число, или «-» чтобы не менять, текущий: {works[idx]['plan']} {works[idx].get('unit','т')}):"
     )
     await state.set_state(SettingsStates.waiting_edit_work_plan)
 
@@ -386,14 +424,43 @@ async def process_edit_work_plan(message: types.Message, state: FSMContext):
             save_works(works)
         except ValueError:
             return await message.answer("Введите число (например: 20.5) или «-»:")
+    await state.update_data(edit_work_idx=idx)
+    await message.answer(
+        f"📏 Выберите единицу измерения (текущая: <b>{works[idx].get('unit','т')}</b>):",
+        parse_mode="HTML",
+        reply_markup=units_keyboard("unit_edit")
+    )
+
+@dp.callback_query(F.data.startswith("unit_edit_"))
+async def cb_unit_edit(callback: types.CallbackQuery, state: FSMContext):
+    value = callback.data.replace("unit_edit_", "")
+    if value == "custom":
+        await callback.message.edit_text("Введите свою единицу измерения:")
+        await state.set_state(SettingsStates.waiting_edit_work_unit_custom)
+        await callback.answer()
+        return
+    await finish_edit_work(callback.message, state, value)
+    await callback.answer()
+
+@dp.message(SettingsStates.waiting_edit_work_unit_custom)
+async def process_edit_work_unit_custom(message: types.Message, state: FSMContext):
+    await finish_edit_work(message, state, message.text.strip())
+
+async def finish_edit_work(message: types.Message, state: FSMContext, unit: str):
+    data = await state.get_data()
+    idx = data['edit_work_idx']
+    works = load_works()
+    works[idx]['unit'] = unit
+    save_works(works)
     await state.clear()
     w = works[idx]
     await message.answer(
-        f"✅ Сохранено: <b>{w['name']}</b> — план {w['plan']} т",
+        f"✅ Сохранено: <b>{w['name']}</b>\nПлан: {w['plan']} {unit}",
         reply_markup=works_list_menu(), parse_mode="HTML"
     )
 
-# Удалить работу
+# --- Удалить работу ---
+
 @dp.callback_query(F.data.startswith("w_del_") & ~F.data.startswith("w_del_confirm_"))
 async def cb_w_del(callback: types.CallbackQuery):
     idx = int(callback.data.split("_")[-1])
@@ -421,10 +488,7 @@ async def cb_w_del_confirm(callback: types.CallbackQuery):
     name = works[idx]['name']
     works.pop(idx)
     save_works(works)
-    await callback.message.edit_text(
-        f"✅ «{name}» удалён.",
-        reply_markup=works_list_menu()
-    )
+    await callback.message.edit_text(f"✅ «{name}» удалён.", reply_markup=works_list_menu())
     await callback.answer()
 
 # --- Создать отчёт ---
@@ -485,11 +549,12 @@ async def process_lunch_custom(message: types.Message, state: FSMContext):
 async def process_workers(message: types.Message, state: FSMContext):
     if not message.text.strip().isdigit():
         return await message.answer("Введите число:", reply_markup=cancel_keyboard())
-    await state.update_data(workers=message.text.strip(), volumes=[], current_work_idx=0)
     works = load_works()
+    await state.update_data(workers=message.text.strip(), volumes=[], current_work_idx=0)
     w = works[0]
+    unit = w.get('unit', 'т')
     await message.answer(
-        f"⛏ Введите выполнение за смену по работе:\n<b>{w['name']}</b> (план: {w['plan']} т)\n\nВведите значение в тоннах:",
+        f"⛏ <b>{w['name']}</b>\nПлан: {w['plan']} {unit}\n\nВыполнение за смену ({unit}):",
         parse_mode="HTML", reply_markup=cancel_keyboard()
     )
     await state.set_state(ReportStates.waiting_volume)
@@ -511,8 +576,9 @@ async def process_volume(message: types.Message, state: FSMContext):
     works = load_works()
     if current_idx < len(works):
         w = works[current_idx]
+        unit = w.get('unit', 'т')
         await message.answer(
-            f"⛏ Введите выполнение по работе:\n<b>{w['name']}</b> (план: {w['plan']} т)\n\nВведите значение в тоннах:",
+            f"⛏ <b>{w['name']}</b>\nПлан: {w['plan']} {unit}\n\nВыполнение за смену ({unit}):",
             parse_mode="HTML", reply_markup=cancel_keyboard()
         )
     else:
@@ -551,13 +617,11 @@ async def finish_report(message: types.Message, state: FSMContext):
     report_num = load_counter()
     save_counter(report_num + 1)
 
-    # Обновляем накопленные данные
     for i, w in enumerate(works):
         if i < len(volumes):
             w['done'] = round(w['done'] + volumes[i], 6)
     save_works(works)
 
-    # Формируем отчёт
     lines = [
         f"🧾 Ежесменный отчёт № {report_num} по объекту:",
         f"{obj}",
@@ -576,16 +640,17 @@ async def finish_report(message: types.Message, state: FSMContext):
         vol = volumes[i] if i < len(volumes) else 0.0
         plan = w['plan']
         done = w['done']
+        unit = w.get('unit', 'т')
         pct_done = (done / plan * 100) if plan > 0 else 0
         remains = plan - done
         pct_rem = 100 - pct_done
         lines += [
             f"🔨 {i+1}. {w['name']}",
-            f"☑️ Смена: {vol} т",
+            f"☑️ Смена: {vol} {unit}",
             f"👷‍♂️🔄 Задействовано рабочих: {workers}",
-            f"✅ Всего выполнено: {done:.4f} т({pct_done:.2f}%)",
-            f"из {plan} т",
-            f"⬜️ Всего осталось: {remains:.4f} т ({pct_rem:.2f}%)",
+            f"✅ Всего выполнено: {done:.4f} {unit} ({pct_done:.2f}%)",
+            f"из {plan} {unit}",
+            f"⬜️ Всего осталось: {remains:.4f} {unit} ({pct_rem:.2f}%)",
             f"",
         ]
 
